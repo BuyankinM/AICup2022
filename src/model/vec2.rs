@@ -18,9 +18,6 @@ impl trans::Trans for Vec2 {
     fn read_from(reader: &mut dyn std::io::Read) -> std::io::Result<Self> {
         let x: f64 = trans::Trans::read_from(reader)?;
         let y: f64 = trans::Trans::read_from(reader)?;
-        Ok(Self {
-            x,
-            y,
-        })
+        Ok(Self { x, y })
     }
 }

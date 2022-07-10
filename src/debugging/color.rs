@@ -26,11 +26,6 @@ impl trans::Trans for Color {
         let g: f64 = trans::Trans::read_from(reader)?;
         let b: f64 = trans::Trans::read_from(reader)?;
         let a: f64 = trans::Trans::read_from(reader)?;
-        Ok(Self {
-            r,
-            g,
-            b,
-            a,
-        })
+        Ok(Self { r, g, b, a })
     }
 }

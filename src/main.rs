@@ -1,9 +1,10 @@
-mod my_strategy;
+#![allow(dead_code, clippy::or_fun_call)]
 mod debug_interface;
+mod my_strategy;
 
+use ai_cup_22::*;
 use debug_interface::DebugInterface;
 use my_strategy::MyStrategy;
-use ai_cup_22::*;
 
 struct Args {
     host: String,
@@ -56,9 +57,7 @@ impl Runner {
         let mut strategy = None;
         loop {
             match codegame::ServerMessage::read_from(&mut self.reader)? {
-                codegame::ServerMessage::UpdateConstants {
-                    constants
-                } => {
+                codegame::ServerMessage::UpdateConstants { constants } => {
                     strategy = Some(MyStrategy::new(constants));
                 }
                 codegame::ServerMessage::GetOrder {
@@ -84,7 +83,10 @@ impl Runner {
                     break;
                 }
                 codegame::ServerMessage::DebugUpdate { displayed_tick } => {
-                    strategy.as_mut().unwrap().debug_update(displayed_tick, &mut self.debug_interface());
+                    strategy
+                        .as_mut()
+                        .unwrap()
+                        .debug_update(displayed_tick, &mut self.debug_interface());
                     codegame::ClientMessage::DebugUpdateDone {}.write_to(&mut self.writer)?;
                     self.writer.flush()?;
                 }

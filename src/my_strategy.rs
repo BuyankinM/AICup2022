@@ -12,6 +12,9 @@ use ai_cup_22::model::Vec2;
 use ai_cup_22::*;
 
 const ANGLE: f64 = std::f64::consts::PI / 6.0;
+const K_SPIRAL: f64 = 0.9;
+const K_VEC: f64 = 175.0;
+const R2_DOP: f64 = 25.0;
 
 pub trait Vec2Ops {
     fn zero() -> Self;
@@ -145,7 +148,7 @@ impl MyStrategy {
             State::Attack { ref pos } => {
                 let vec_to_target = diff_vec(pos, &self.my_pos);
                 (
-                    vec_to_target.clone(),
+                    self.spiral_rotate_direction(pos),
                     vec_to_target,
                     Some(ActionOrder::Aim { shoot: true }),
                 )
@@ -186,10 +189,21 @@ impl MyStrategy {
         }
     }
 
+    fn spiral_rotate_direction(&self, pos: &Vec2) -> Vec2 {
+        let dx = self.my_pos.x - pos.x;
+        let dy = self.my_pos.y - pos.y;
+        let new_x = (dx * self.cos_angle - dy * self.sin_angle) * K_SPIRAL + pos.x;
+        let new_y = (dx * self.sin_angle + dy * self.cos_angle) * K_SPIRAL + pos.y;
+        Vec2 {
+            x: (new_x - self.my_pos.x) * K_VEC,
+            y: (new_y - self.my_pos.y) * K_VEC,
+        }
+    }
+
     fn default_velocity(&self) -> Vec2 {
         Vec2 {
-            x: -self.my_pos.x,
-            y: -self.my_pos.y,
+            x: -self.my_pos.x * K_VEC,
+            y: -self.my_pos.y * K_VEC,
         }
     }
 
@@ -217,12 +231,15 @@ impl MyStrategy {
         let mut ammo = Vec::new();
 
         for loot in game.loot.iter().filter(|loot| {
-            dist_euclid_square(&loot.position, &self.zone_center) < self.zone_radius_2
+            dist_euclid_square(&loot.position, &self.zone_center) < self.zone_radius_2 - R2_DOP
         }) {
             match loot.item {
                 Item::ShieldPotions { amount } => shields.push((loot, amount)),
                 Item::Weapon { type_index } => {
-                    if type_index > self.my_weapon || self.my_weapon_num == 0 {
+                    let idx = type_index as usize;
+                    if (type_index > self.my_weapon || self.my_weapon_num == 0)
+                        && my_unit.ammo[idx] > 0
+                    {
                         weapons.push((loot, type_index))
                     }
                 }
@@ -232,7 +249,9 @@ impl MyStrategy {
                 } => {
                     let idx = weapon_type_index as usize;
                     if my_unit.ammo[idx] < self.constants.weapons[idx].max_inventory_ammo {
-                        ammo.push((loot, weapon_type_index == self.my_weapon, amount))
+                        let find_first =
+                            weapon_type_index != self.my_weapon || self.my_weapon_num == 0;
+                        ammo.push((loot, find_first, amount))
                     }
                 }
             }
@@ -247,12 +266,17 @@ impl MyStrategy {
             return;
         }
 
-        if let Some(state) = self.operations.get(&OperationType::GoToShield) {
-            self.state = state.clone();
-        } else if let Some(state) = self.operations.get(&OperationType::GoToAmmo) {
-            self.state = state.clone();
-        } else if let Some(state) = self.operations.get(&OperationType::GoToWeapon) {
-            self.state = state.clone();
+        let check_op = [
+            OperationType::GoToShield,
+            OperationType::GoToWeapon,
+            OperationType::GoToAmmo,
+        ];
+
+        for op in &check_op {
+            if let Some(state) = self.operations.get(op) {
+                self.state = state.clone();
+                break;
+            }
         }
 
         if let State::GoToItem { id, pos } = &self.state {
@@ -345,10 +369,10 @@ impl MyStrategy {
 
         let (loot, _, _, _) = ammo
             .iter()
-            .map(|(loot, its_my_type, amount)| {
+            .map(|(loot, find_first, amount)| {
                 (
                     loot,
-                    its_my_type,
+                    find_first,
                     amount,
                     dist_manh(&loot.position, &self.my_pos),
                 )
@@ -367,7 +391,7 @@ impl MyStrategy {
         );
     }
 
-    pub fn debug_update(&mut self, displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
+    pub fn debug_update(&mut self, _displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
 
     pub fn finish(&mut self) {}
 }
@@ -376,13 +400,17 @@ fn dist_manh(pos_1: &Vec2, pos_2: &Vec2) -> f64 {
     (pos_1.x - pos_2.x).abs() + (pos_1.y - pos_2.y).abs()
 }
 
+fn dist_euclid(pos_1: &Vec2, pos_2: &Vec2) -> f64 {
+    ((pos_1.x - pos_2.x).powi(2) + (pos_1.y - pos_2.y).powi(2)).sqrt()
+}
+
 fn dist_euclid_square(pos_1: &Vec2, pos_2: &Vec2) -> f64 {
     (pos_1.x - pos_2.x).powi(2) + (pos_1.y - pos_2.y).powi(2)
 }
 
 fn diff_vec(pos_1: &Vec2, pos_2: &Vec2) -> Vec2 {
     Vec2 {
-        x: (pos_1.x - pos_2.x) * 100.0,
-        y: (pos_1.y - pos_2.y) * 100.0,
+        x: (pos_1.x - pos_2.x) * K_VEC,
+        y: (pos_1.y - pos_2.y) * K_VEC,
     }
 }
