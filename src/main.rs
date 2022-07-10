@@ -1,9 +1,9 @@
-mod debug_interface;
 mod my_strategy;
+mod debug_interface;
 
-use ai_cup_22::*;
 use debug_interface::DebugInterface;
 use my_strategy::MyStrategy;
+use ai_cup_22::*;
 
 struct Args {
     host: String,
@@ -15,13 +15,11 @@ impl Args {
     fn parse() -> Self {
         let mut args = std::env::args();
         args.next().unwrap();
-        let host = args.next().unwrap_or_else(|| "127.0.0.1".to_owned());
+        let host = args.next().unwrap_or("127.0.0.1".to_owned());
         let port = args
             .next()
             .map_or(31001, |s| s.parse().expect("Can't parse port"));
-        let token = args
-            .next()
-            .unwrap_or_else(|| "0000000000000000".to_string());
+        let token = args.next().unwrap_or("0000000000000000".to_string());
         Self { host, port, token }
     }
 }
@@ -42,7 +40,7 @@ impl Runner {
         let mut writer = std::io::BufWriter::new(stream_clone);
         args.token.write_to(&mut writer)?;
         1i32.write_to(&mut writer)?;
-        0i32.write_to(&mut writer)?;
+        1i32.write_to(&mut writer)?;
         1i32.write_to(&mut writer)?;
         writer.flush()?;
         Ok(Self {
@@ -58,7 +56,9 @@ impl Runner {
         let mut strategy = None;
         loop {
             match codegame::ServerMessage::read_from(&mut self.reader)? {
-                codegame::ServerMessage::UpdateConstants { constants } => {
+                codegame::ServerMessage::UpdateConstants {
+                    constants
+                } => {
                     strategy = Some(MyStrategy::new(constants));
                 }
                 codegame::ServerMessage::GetOrder {
@@ -83,11 +83,8 @@ impl Runner {
                     strategy.as_mut().unwrap().finish();
                     break;
                 }
-                codegame::ServerMessage::DebugUpdate {} => {
-                    strategy
-                        .as_mut()
-                        .unwrap()
-                        .debug_update(&mut self.debug_interface());
+                codegame::ServerMessage::DebugUpdate { displayed_tick } => {
+                    strategy.as_mut().unwrap().debug_update(displayed_tick, &mut self.debug_interface());
                     codegame::ClientMessage::DebugUpdateDone {}.write_to(&mut self.writer)?;
                     self.writer.flush()?;
                 }

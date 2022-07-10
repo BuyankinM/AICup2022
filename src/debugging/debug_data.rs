@@ -229,12 +229,17 @@ impl trans::Trans for DebugData {
                 size.write_to(writer)?;
                 color.write_to(writer)?;
             }
-            Self::Polygon { vertices, color } => {
+            Self::Polygon {
+                vertices,
+                color,
+            } => {
                 <i32 as trans::Trans>::write_to(&7, writer)?;
                 vertices.write_to(writer)?;
                 color.write_to(writer)?;
             }
-            Self::GradientPolygon { vertices } => {
+            Self::GradientPolygon {
+                vertices,
+            } => {
                 <i32 as trans::Trans>::write_to(&8, writer)?;
                 vertices.write_to(writer)?;
             }
@@ -274,7 +279,10 @@ impl trans::Trans for DebugData {
                 width.write_to(writer)?;
                 color.write_to(writer)?;
             }
-            Self::GradientPolyLine { vertices, width } => {
+            Self::GradientPolyLine {
+                vertices,
+                width,
+            } => {
                 <i32 as trans::Trans>::write_to(&12, writer)?;
                 vertices.write_to(writer)?;
                 width.write_to(writer)?;
@@ -376,11 +384,16 @@ impl trans::Trans for DebugData {
             7 => {
                 let vertices: Vec<model::Vec2> = trans::Trans::read_from(reader)?;
                 let color: debugging::Color = trans::Trans::read_from(reader)?;
-                Ok(Self::Polygon { vertices, color })
+                Ok(Self::Polygon {
+                    vertices,
+                    color,
+                })
             }
             8 => {
                 let vertices: Vec<debugging::ColoredVertex> = trans::Trans::read_from(reader)?;
-                Ok(Self::GradientPolygon { vertices })
+                Ok(Self::GradientPolygon {
+                    vertices,
+                })
             }
             9 => {
                 let first_end: model::Vec2 = trans::Trans::read_from(reader)?;
@@ -421,12 +434,14 @@ impl trans::Trans for DebugData {
             12 => {
                 let vertices: Vec<debugging::ColoredVertex> = trans::Trans::read_from(reader)?;
                 let width: f64 = trans::Trans::read_from(reader)?;
-                Ok(Self::GradientPolyLine { vertices, width })
+                Ok(Self::GradientPolyLine {
+                    vertices,
+                    width,
+                })
             }
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("Unexpected tag {:?}", tag),
-            )),
+                format!("Unexpected tag {:?}", tag))),
         }
     }
 }

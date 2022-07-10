@@ -16,15 +16,21 @@ pub enum ServerMessage {
         debug_available: bool,
     },
     /// Signifies end of the game
-    Finish {},
+    Finish {
+    },
     /// Debug update
-    DebugUpdate {},
+    DebugUpdate {
+        /// Displayed tick
+        displayed_tick: i32,
+    },
 }
 
 impl trans::Trans for ServerMessage {
     fn write_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
         match self {
-            Self::UpdateConstants { constants } => {
+            Self::UpdateConstants {
+                constants,
+            } => {
                 <i32 as trans::Trans>::write_to(&0, writer)?;
                 constants.write_to(writer)?;
             }
@@ -36,11 +42,15 @@ impl trans::Trans for ServerMessage {
                 player_view.write_to(writer)?;
                 debug_available.write_to(writer)?;
             }
-            Self::Finish {} => {
+            Self::Finish {
+            } => {
                 <i32 as trans::Trans>::write_to(&2, writer)?;
             }
-            Self::DebugUpdate {} => {
+            Self::DebugUpdate {
+                displayed_tick,
+            } => {
                 <i32 as trans::Trans>::write_to(&3, writer)?;
+                displayed_tick.write_to(writer)?;
             }
         }
         Ok(())
@@ -50,7 +60,9 @@ impl trans::Trans for ServerMessage {
         match tag {
             0 => {
                 let constants: model::Constants = trans::Trans::read_from(reader)?;
-                Ok(Self::UpdateConstants { constants })
+                Ok(Self::UpdateConstants {
+                    constants,
+                })
             }
             1 => {
                 let player_view: model::Game = trans::Trans::read_from(reader)?;
@@ -60,12 +72,19 @@ impl trans::Trans for ServerMessage {
                     debug_available,
                 })
             }
-            2 => Ok(Self::Finish {}),
-            3 => Ok(Self::DebugUpdate {}),
+            2 => {
+                Ok(Self::Finish {
+                })
+            }
+            3 => {
+                let displayed_tick: i32 = trans::Trans::read_from(reader)?;
+                Ok(Self::DebugUpdate {
+                    displayed_tick,
+                })
+            }
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("Unexpected tag {:?}", tag),
-            )),
+                format!("Unexpected tag {:?}", tag))),
         }
     }
 }
