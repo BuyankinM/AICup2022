@@ -147,10 +147,13 @@ impl MyStrategy {
 
             State::Attack { ref pos } => {
                 let vec_to_target = diff_vec(pos, &self.my_pos);
+                let is_visible = self.check_enemy_visibility(pos);
+                let is_acessible = self.check_enemy_accesibility(pos);
+                let shoot = is_visible && is_acessible;
                 (
                     self.spiral_rotate_direction(pos),
                     vec_to_target,
-                    Some(ActionOrder::Aim { shoot: true }),
+                    Some(ActionOrder::Aim { shoot }),
                 )
             }
         };
@@ -389,6 +392,56 @@ impl MyStrategy {
                 pos: loot.position.clone(),
             },
         );
+    }
+
+    fn check_enemy_visibility(&self, pos: &Vec2) -> bool {
+        let (min_x, max_x) = match pos.x < self.my_pos.x {
+            true => (pos.x, self.my_pos.x),
+            false => (self.my_pos.x, pos.x),
+        };
+        let (min_y, max_y) = match pos.y < self.my_pos.y {
+            true => (pos.y, self.my_pos.y),
+            false => (self.my_pos.y, pos.y),
+        };
+
+        let obstacles = self
+            .constants
+            .obstacles
+            .iter()
+            .filter_map(|ob| {
+                if ob.position.x >= min_x
+                    && ob.position.x <= max_x
+                    && ob.position.y >= min_y
+                    && ob.position.y <= max_y
+                    && !ob.can_shoot_through
+                {
+                    Some((ob.position.x, ob.position.y, ob.radius))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if obstacles.is_empty() {
+            return true;
+        }
+
+        // ax + by + c = 0
+        let a = (pos.y - self.my_pos.y) / (pos.x - self.my_pos.x);
+        let b = -1.0_f64;
+        let c = pos.y - a * pos.x;
+
+        let denominator = (a.powi(2) + b.powi(2)).sqrt();
+        obstacles.into_iter().all(|(x0, y0, radius)| {
+            let dist = (a * x0 + b * y0 + c).abs() / denominator;
+            dist > radius
+        })
+    }
+
+    fn check_enemy_accesibility(&self, pos: &Vec2) -> bool {
+        let dist = dist_euclid(&self.my_pos, pos);
+        let weapon = &self.constants.weapons[self.my_weapon as usize];
+        weapon.projectile_speed * weapon.projectile_life_time >= dist
     }
 
     pub fn debug_update(&mut self, _displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
