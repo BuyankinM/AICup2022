@@ -18,11 +18,16 @@ const R2_DOP: f64 = 25.0;
 
 pub trait Vec2Ops {
     fn zero() -> Self;
+    fn len(&self) -> f64;
 }
 
 impl Vec2Ops for Vec2 {
     fn zero() -> Self {
         Vec2 { x: 0.0, y: 0.0 }
+    }
+
+    fn len(&self) -> f64 {
+        (self.x.powi(2) + self.y.powi(2)).sqrt()
     }
 }
 
@@ -33,6 +38,7 @@ enum State {
     GetItem(i32),
     UseShield,
     Attack { pos: Vec2 },
+    RunAway { dir: Vec2 },
 }
 
 #[derive(Hash, Eq, PartialEq, Copy, Clone)]
@@ -42,12 +48,14 @@ enum OperationType {
     GoToAmmo = 0b100,
     UseShield = 0b1000,
     Attack = 0b10000,
+    RunAway = 0b100000,
 }
 
 pub struct MyStrategy {
     state: State,
     operations: HashMap<OperationType, State>,
     operations_bin: u32,
+    ticks_to_run: u32,
     cos_angle: f64,
     sin_angle: f64,
     constants: model::Constants,
@@ -68,6 +76,7 @@ impl MyStrategy {
             state: State::Walk,
             operations: HashMap::new(),
             operations_bin: 0,
+            ticks_to_run: 0,
             cos_angle: ANGLE.cos(),
             sin_angle: ANGLE.sin(),
             constants,
@@ -110,10 +119,14 @@ impl MyStrategy {
             None => (-1, 0),
         };
 
-        self.check_shield();
-        self.check_attack(&enemies);
-        self.walk_and_loot(game, my_unit);
-        self.go_and_take_loot();
+        self.check_danger(&enemies);
+
+        if !self.check_operation_bit(OperationType::RunAway) {
+            self.check_shield();
+            self.check_attack(&enemies);
+            self.walk_and_loot(game, my_unit);
+            self.go_and_take_loot();
+        }
 
         let (target_velocity, target_direction, action) = match self.state {
             State::Walk => (
@@ -156,7 +169,15 @@ impl MyStrategy {
                     Some(ActionOrder::Aim { shoot }),
                 )
             }
+
+            State::RunAway { ref dir } => (dir.clone(), dir.clone(), None),
         };
+
+        match self.ticks_to_run {
+            1 => self.set_deafult_state(),
+            _ if self.ticks_to_run > 1 => self.ticks_to_run -= 1,
+            _ => (),
+        }
 
         let mut unit_orders = HashMap::with_capacity(1);
         unit_orders.insert(
@@ -173,6 +194,7 @@ impl MyStrategy {
     fn set_deafult_state(&mut self) {
         self.state = State::Walk;
         self.operations_bin = 0;
+        self.ticks_to_run = 0;
     }
 
     fn set_operation_bit(&mut self, op: OperationType) {
@@ -252,8 +274,10 @@ impl MyStrategy {
                 } => {
                     let idx = weapon_type_index as usize;
                     if my_unit.ammo[idx] < self.constants.weapons[idx].max_inventory_ammo {
-                        let find_first =
-                            weapon_type_index != self.my_weapon || self.my_weapon_num == 0;
+                        let find_first = (self.my_weapon == weapon_type_index
+                            && weapon_type_index >= 1)
+                            || weapon_type_index != self.my_weapon
+                            || self.my_weapon_num == 0;
                         ammo.push((loot, find_first, amount))
                     }
                 }
@@ -439,9 +463,56 @@ impl MyStrategy {
     }
 
     fn check_enemy_accesibility(&self, pos: &Vec2) -> bool {
-        let dist = dist_euclid(&self.my_pos, pos);
-        let weapon = &self.constants.weapons[self.my_weapon as usize];
-        weapon.projectile_speed * weapon.projectile_life_time >= dist
+        self.get_weapon_dist(self.my_weapon) >= dist_euclid(&self.my_pos, pos)
+    }
+
+    fn get_weapon_dist(&self, weapon_idx: i32) -> f64 {
+        let weapon = &self.constants.weapons[weapon_idx as usize];
+        weapon.projectile_speed * weapon.projectile_life_time
+    }
+
+    fn check_danger(&mut self, enemies: &Vec<&Unit>) {
+        if enemies.is_empty() {
+            return;
+        }
+
+        for en in enemies {
+            let cos_to_me = self.get_enemy_cos_to_me(en);
+            let k_power = (en.health + en.shield) / (self.my_health + self.my_shield);
+
+            if let Some(idx) = en.weapon {
+                let dist_to_me = dist_euclid(&self.my_pos, &en.position);
+                let weapon_dist = self.get_weapon_dist(idx);
+                let can_shoot = weapon_dist >= dist_to_me;
+
+                if can_shoot
+                    && (idx > self.my_weapon || k_power > 1.5)
+                    && en.ammo[idx as usize] > 0
+                    && cos_to_me > 0.7
+                {
+                    self.state = State::RunAway {
+                        dir: Vec2 {
+                            x: en.direction.x * K_VEC,
+                            y: en.direction.y * K_VEC,
+                        },
+                    };
+
+                    let op = OperationType::RunAway;
+                    self.set_operation_bit(op);
+                    self.operations.insert(op, self.state.clone());
+
+                    self.ticks_to_run = 4;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn get_enemy_cos_to_me(&self, enemy: &Unit) -> f64 {
+        let enemy_dir = &enemy.direction;
+        let dir_to_me = &diff_vec(&self.my_pos, &enemy.position);
+        (enemy_dir.x * dir_to_me.x + enemy_dir.y * dir_to_me.y)
+            / (enemy_dir.len() * dir_to_me.len())
     }
 
     pub fn debug_update(&mut self, _displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
