@@ -1,3 +1,4 @@
+use rand::Rng;
 use std::collections::HashMap;
 
 use crate::debug_interface::DebugInterface;
@@ -14,7 +15,7 @@ use ai_cup_22::*;
 const ANGLE: f64 = std::f64::consts::PI / 6.0;
 const K_SPIRAL: f64 = 0.9;
 const K_VEC: f64 = 175.0;
-const R2_DOP: f64 = 25.0;
+const TICKS_TO_RUN: u8 = 4;
 
 pub trait Vec2Ops {
     fn zero() -> Self;
@@ -55,7 +56,7 @@ pub struct MyStrategy {
     state: State,
     operations: HashMap<OperationType, State>,
     operations_bin: u32,
-    ticks_to_run: u32,
+    ticks_to_run: u8,
     cos_angle: f64,
     sin_angle: f64,
     constants: model::Constants,
@@ -100,7 +101,7 @@ impl MyStrategy {
         self.operations.clear();
 
         self.zone_center = game.zone.current_center.clone();
-        self.zone_radius_2 = game.zone.current_radius.powi(2);
+        self.zone_radius_2 = (game.zone.current_radius - self.constants.unit_radius).powi(2);
 
         let (my_units, enemies): (Vec<_>, Vec<_>) = game
             .units
@@ -119,6 +120,7 @@ impl MyStrategy {
             None => (-1, 0),
         };
 
+        self.check_redzone();
         self.check_danger(&enemies);
 
         if !self.check_operation_bit(OperationType::RunAway) {
@@ -217,18 +219,26 @@ impl MyStrategy {
     fn spiral_rotate_direction(&self, pos: &Vec2) -> Vec2 {
         let dx = self.my_pos.x - pos.x;
         let dy = self.my_pos.y - pos.y;
-        let new_x = (dx * self.cos_angle - dy * self.sin_angle) * K_SPIRAL + pos.x;
-        let new_y = (dx * self.sin_angle + dy * self.cos_angle) * K_SPIRAL + pos.y;
+
+        let mut rng = rand::thread_rng();
+        let sign = match rng.gen_bool(1.0 / 3.0) {
+            true => 1.0,
+            false => -1.0,
+        };
+
+        let new_x = (dx * self.cos_angle - dy * self.sin_angle * sign) * K_SPIRAL;
+        let new_y = (dx * self.sin_angle * sign + dy * self.cos_angle) * K_SPIRAL;
+
         Vec2 {
-            x: (new_x - self.my_pos.x) * K_VEC,
-            y: (new_y - self.my_pos.y) * K_VEC,
+            x: (new_x - dx) * K_VEC,
+            y: (new_y - dy) * K_VEC,
         }
     }
 
     fn default_velocity(&self) -> Vec2 {
         Vec2 {
-            x: -self.my_pos.x * K_VEC,
-            y: -self.my_pos.y * K_VEC,
+            x: (self.zone_center.x - self.my_pos.x) * K_VEC,
+            y: (self.zone_center.y - self.my_pos.y) * K_VEC,
         }
     }
 
@@ -255,9 +265,11 @@ impl MyStrategy {
         let mut weapons = Vec::new();
         let mut ammo = Vec::new();
 
-        for loot in game.loot.iter().filter(|loot| {
-            dist_euclid_square(&loot.position, &self.zone_center) < self.zone_radius_2 - R2_DOP
-        }) {
+        for loot in game
+            .loot
+            .iter()
+            .filter(|loot| self.is_pos_in_zone(&loot.position))
+        {
             match loot.item {
                 Item::ShieldPotions { amount } => shields.push((loot, amount)),
                 Item::Weapon { type_index } => {
@@ -330,7 +342,7 @@ impl MyStrategy {
 
         if let Some((enemy, _)) = enemies
             .iter()
-            .filter(|e| (e.health + e.shield) <= (self.my_health + self.my_shield))
+            .filter(|e| self.check_enemy_accesibility(&e.position))
             .map(|e| (e, dist_manh(&self.my_pos, &e.position)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
         {
@@ -433,10 +445,10 @@ impl MyStrategy {
             .obstacles
             .iter()
             .filter_map(|ob| {
-                if ob.position.x >= min_x
-                    && ob.position.x <= max_x
-                    && ob.position.y >= min_y
-                    && ob.position.y <= max_y
+                if ob.position.x >= min_x - ob.radius
+                    && ob.position.x <= max_x + ob.radius
+                    && ob.position.y >= min_y - ob.radius
+                    && ob.position.y <= max_y + ob.radius
                     && !ob.can_shoot_through
                 {
                     Some((ob.position.x, ob.position.y, ob.radius))
@@ -472,7 +484,7 @@ impl MyStrategy {
     }
 
     fn check_danger(&mut self, enemies: &Vec<&Unit>) {
-        if enemies.is_empty() {
+        if enemies.is_empty() || self.check_operation_bit(OperationType::RunAway) {
             return;
         }
 
@@ -488,11 +500,12 @@ impl MyStrategy {
                 if can_shoot
                     && (idx > self.my_weapon || k_power > 1.5)
                     && en.ammo[idx as usize] > 0
-                    && cos_to_me > 0.7
+                    && cos_to_me > 0.9
+                    && en.aim >= 0.5
                 {
                     self.state = State::RunAway {
                         dir: Vec2 {
-                            x: en.direction.x * K_VEC,
+                            x: en.direction.x * K_VEC * 3.0,
                             y: en.direction.y * K_VEC,
                         },
                     };
@@ -501,11 +514,27 @@ impl MyStrategy {
                     self.set_operation_bit(op);
                     self.operations.insert(op, self.state.clone());
 
-                    self.ticks_to_run = 4;
+                    self.ticks_to_run = TICKS_TO_RUN;
                     break;
                 }
             }
         }
+    }
+
+    fn check_redzone(&mut self) {
+        if self.is_pos_in_zone(&self.my_pos) {
+            return;
+        }
+
+        self.state = State::RunAway {
+            dir: self.default_velocity(),
+        };
+
+        let op = OperationType::RunAway;
+        self.set_operation_bit(op);
+        self.operations.insert(op, self.state.clone());
+
+        self.ticks_to_run = TICKS_TO_RUN;
     }
 
     fn get_enemy_cos_to_me(&self, enemy: &Unit) -> f64 {
@@ -513,6 +542,10 @@ impl MyStrategy {
         let dir_to_me = &diff_vec(&self.my_pos, &enemy.position);
         (enemy_dir.x * dir_to_me.x + enemy_dir.y * dir_to_me.y)
             / (enemy_dir.len() * dir_to_me.len())
+    }
+
+    fn is_pos_in_zone(&self, pos: &Vec2) -> bool {
+        dist_euclid_square(pos, &self.zone_center) < self.zone_radius_2
     }
 
     pub fn debug_update(&mut self, _displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
