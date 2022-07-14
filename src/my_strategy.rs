@@ -12,10 +12,10 @@ use ai_cup_22::model::UnitOrder;
 use ai_cup_22::model::Vec2;
 use ai_cup_22::*;
 
-const ANGLE: f64 = std::f64::consts::PI / 6.0;
-const K_SPIRAL: f64 = 0.9;
-const K_VEC: f64 = 175.0;
-const TICKS_TO_RUN: u8 = 4;
+const K_SPIRAL: f64 = 0.77;
+const K_VEC: f64 = 777.0;
+const TICKS_TO_RUN: u8 = 5;
+const MAX_OBS_RADIUS: f64 = 3.0;
 
 pub trait Vec2Ops {
     fn zero() -> Self;
@@ -57,8 +57,6 @@ pub struct MyStrategy {
     operations: HashMap<OperationType, State>,
     operations_bin: u32,
     ticks_to_run: u8,
-    cos_angle: f64,
-    sin_angle: f64,
     constants: model::Constants,
     my_dir: Vec2,
     my_pos: Vec2,
@@ -78,8 +76,6 @@ impl MyStrategy {
             operations: HashMap::new(),
             operations_bin: 0,
             ticks_to_run: 0,
-            cos_angle: ANGLE.cos(),
-            sin_angle: ANGLE.sin(),
             constants,
             my_dir: Vec2::zero(),
             my_pos: Vec2::zero(),
@@ -100,9 +96,6 @@ impl MyStrategy {
     ) -> model::Order {
         self.operations.clear();
 
-        self.zone_center = game.zone.current_center.clone();
-        self.zone_radius_2 = (game.zone.current_radius - self.constants.unit_radius).powi(2);
-
         let (my_units, enemies): (Vec<_>, Vec<_>) = game
             .units
             .iter()
@@ -114,6 +107,9 @@ impl MyStrategy {
         self.my_health = my_unit.health;
         self.my_shield = my_unit.shield;
         self.my_shield_potions = my_unit.shield_potions;
+
+        self.zone_center = game.zone.current_center.clone();
+        self.zone_radius_2 = (game.zone.current_radius - self.constants.unit_radius).powi(2);
 
         (self.my_weapon, self.my_weapon_num) = match my_unit.weapon {
             Some(id) => (id, my_unit.ammo[id as usize]),
@@ -130,15 +126,15 @@ impl MyStrategy {
             self.go_and_take_loot();
         }
 
-        let (target_velocity, target_direction, action) = match self.state {
+        let (mut target_velocity, target_direction, action) = match self.state {
             State::Walk => (
                 self.default_velocity(),
-                self.default_rotate_direction(),
+                self.default_rotate_direction(30.0),
                 None,
             ),
 
             State::GoToItem { ref pos, .. } => {
-                let vec_to_target = diff_vec(pos, &self.my_pos);
+                let vec_to_target = sub_vec(pos, &self.my_pos);
                 (vec_to_target.clone(), vec_to_target, None)
             }
 
@@ -161,12 +157,12 @@ impl MyStrategy {
             }
 
             State::Attack { ref pos } => {
-                let vec_to_target = diff_vec(pos, &self.my_pos);
+                let vec_to_target = sub_vec(pos, &self.my_pos);
                 let is_visible = self.check_enemy_visibility(pos);
                 let is_acessible = self.check_enemy_accesibility(pos);
                 let shoot = is_visible && is_acessible;
                 (
-                    self.spiral_rotate_direction(pos),
+                    self.spiral_rotate_direction(pos, 30.0),
                     vec_to_target,
                     Some(ActionOrder::Aim { shoot }),
                 )
@@ -174,6 +170,8 @@ impl MyStrategy {
 
             State::RunAway { ref dir } => (dir.clone(), dir.clone(), None),
         };
+
+        target_velocity = self.correct_velocity_near_obstacle(target_velocity);
 
         match self.ticks_to_run {
             1 => self.set_deafult_state(),
@@ -207,32 +205,24 @@ impl MyStrategy {
         self.operations_bin & (op as u32) != 0
     }
 
-    fn default_rotate_direction(&self) -> Vec2 {
-        Vec2 {
-            x: self.constants.unit_radius
-                * (self.my_dir.x * self.cos_angle - self.my_dir.y * self.sin_angle),
-            y: self.constants.unit_radius
-                * (self.my_dir.x * self.sin_angle + self.my_dir.y * self.cos_angle),
-        }
+    fn default_rotate_direction(&self, angle: f64) -> Vec2 {
+        rotate_vec(&self.my_dir, angle, None)
     }
 
-    fn spiral_rotate_direction(&self, pos: &Vec2) -> Vec2 {
-        let dx = self.my_pos.x - pos.x;
-        let dy = self.my_pos.y - pos.y;
+    fn spiral_rotate_direction(&self, pos: &Vec2, angle: f64) -> Vec2 {
+        let vec_enemy_to_me = Vec2 {
+            x: self.my_pos.x - pos.x,
+            y: self.my_pos.y - pos.y,
+        };
 
         let mut rng = rand::thread_rng();
-        let sign = match rng.gen_bool(1.0 / 3.0) {
+        let sign = match rng.gen_bool(1.0 / 5.0) {
             true => 1.0,
             false => -1.0,
         };
 
-        let new_x = (dx * self.cos_angle - dy * self.sin_angle * sign) * K_SPIRAL;
-        let new_y = (dx * self.sin_angle * sign + dy * self.cos_angle) * K_SPIRAL;
-
-        Vec2 {
-            x: (new_x - dx) * K_VEC,
-            y: (new_y - dy) * K_VEC,
-        }
+        let new_vec = rotate_vec(&vec_enemy_to_me, angle * sign, Some(K_SPIRAL));
+        sub_vec(&new_vec, &vec_enemy_to_me)
     }
 
     fn default_velocity(&self) -> Vec2 {
@@ -340,9 +330,10 @@ impl MyStrategy {
             return;
         }
 
+        let walk_now = self.is_free_walk();
         if let Some((enemy, _)) = enemies
             .iter()
-            .filter(|e| self.check_enemy_accesibility(&e.position))
+            .filter(|e| walk_now || self.check_enemy_accesibility(&e.position))
             .map(|e| (e, dist_manh(&self.my_pos, &e.position)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
         {
@@ -498,16 +489,13 @@ impl MyStrategy {
                 let can_shoot = weapon_dist >= dist_to_me;
 
                 if can_shoot
-                    && (idx > self.my_weapon || k_power > 1.5)
+                    && (idx > self.my_weapon && k_power > 1.0 || k_power > 1.5)
                     && en.ammo[idx as usize] > 0
                     && cos_to_me > 0.9
                     && en.aim >= 0.5
                 {
                     self.state = State::RunAway {
-                        dir: Vec2 {
-                            x: en.direction.x * K_VEC * 3.0,
-                            y: en.direction.y * K_VEC,
-                        },
+                        dir: self.default_rotate_direction(90.0),
                     };
 
                     let op = OperationType::RunAway;
@@ -537,15 +525,56 @@ impl MyStrategy {
         self.ticks_to_run = TICKS_TO_RUN;
     }
 
+    fn correct_velocity_near_obstacle(&self, target_velocity: Vec2) -> Vec2 {
+        let delta = self.constants.unit_radius + MAX_OBS_RADIUS;
+        let (min_x, max_x) = (self.my_pos.x - delta, self.my_pos.x + delta);
+        let (min_y, max_y) = (self.my_pos.y - delta, self.my_pos.y + delta);
+
+        let near_obstacle = self
+            .constants
+            .obstacles
+            .iter()
+            .filter_map(|ob| {
+                let vec_to_obs = sub_vec(&ob.position, &self.my_pos);
+                if ob.position.x >= min_x
+                    && ob.position.x <= max_x
+                    && ob.position.y >= min_y
+                    && ob.position.y <= max_y
+                    && dist_euclid(&ob.position, &self.my_pos)
+                        < (self.constants.unit_radius + ob.radius + 2.0)
+                    && cos_vec(&vec_to_obs, &target_velocity) > 0.0
+                {
+                    Some(vec_to_obs)
+                } else {
+                    None
+                }
+            })
+            .next();
+
+        if let Some(obs_pos) = near_obstacle {
+            let v1 = rotate_vec(&obs_pos, 90.0, None);
+            let v2 = rotate_vec(&obs_pos, -90.0, None);
+            match cos_vec(&v1, &target_velocity) > cos_vec(&v2, &target_velocity) {
+                true => v1,
+                false => v2,
+            }
+        } else {
+            target_velocity
+        }
+    }
+
     fn get_enemy_cos_to_me(&self, enemy: &Unit) -> f64 {
         let enemy_dir = &enemy.direction;
-        let dir_to_me = &diff_vec(&self.my_pos, &enemy.position);
-        (enemy_dir.x * dir_to_me.x + enemy_dir.y * dir_to_me.y)
-            / (enemy_dir.len() * dir_to_me.len())
+        let dir_to_me = &sub_vec(&self.my_pos, &enemy.position);
+        cos_vec(enemy_dir, dir_to_me)
     }
 
     fn is_pos_in_zone(&self, pos: &Vec2) -> bool {
         dist_euclid_square(pos, &self.zone_center) < self.zone_radius_2
+    }
+
+    fn is_free_walk(&self) -> bool {
+        self.operations_bin == 0
     }
 
     pub fn debug_update(&mut self, _displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
@@ -565,9 +594,22 @@ fn dist_euclid_square(pos_1: &Vec2, pos_2: &Vec2) -> f64 {
     (pos_1.x - pos_2.x).powi(2) + (pos_1.y - pos_2.y).powi(2)
 }
 
-fn diff_vec(pos_1: &Vec2, pos_2: &Vec2) -> Vec2 {
+fn sub_vec(pos_1: &Vec2, pos_2: &Vec2) -> Vec2 {
     Vec2 {
         x: (pos_1.x - pos_2.x) * K_VEC,
         y: (pos_1.y - pos_2.y) * K_VEC,
+    }
+}
+
+fn cos_vec(pos_1: &Vec2, pos_2: &Vec2) -> f64 {
+    (pos_1.x * pos_2.x + pos_1.y * pos_2.y) / (pos_1.len() * pos_2.len())
+}
+
+fn rotate_vec(v: &Vec2, angle: f64, k: Option<f64>) -> Vec2 {
+    let (sin_angle, cos_angle) = (angle.to_radians().sin(), angle.to_radians().cos());
+    let k = k.unwrap_or(K_VEC);
+    Vec2 {
+        x: k * (v.x * cos_angle - v.y * sin_angle),
+        y: k * (v.x * sin_angle + v.y * cos_angle),
     }
 }
