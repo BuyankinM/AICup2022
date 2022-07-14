@@ -116,6 +116,18 @@ impl MyStrategy {
             None => (-1, 0),
         };
 
+        let sounds_of_attack = game
+            .sounds
+            .iter()
+            .filter_map(|s| {
+                if dist_euclid_square(&s.position, &self.my_pos) <= self.constants.unit_radius {
+                    Some((s.type_index, &s.position))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
         self.check_redzone();
         self.check_danger(&enemies);
 
@@ -184,6 +196,10 @@ impl MyStrategy {
         };
 
         target_velocity = self.correct_velocity_near_obstacle(target_velocity);
+
+        if !sounds_of_attack.is_empty() {
+            target_velocity = self.correct_velocity_by_attack(sounds_of_attack);
+        }
 
         match self.ticks_to_run {
             1 => self.set_deafult_state(),
@@ -574,6 +590,12 @@ impl MyStrategy {
         } else {
             target_velocity
         }
+    }
+
+    fn correct_velocity_by_attack(&self, sounds: Vec<(i32, &Vec2)>) -> Vec2 {
+        let (_, pos_sound) = sounds.into_iter().max_by_key(|(id, _)| *id).unwrap();
+        let vec_of_attack = sub_vec(pos_sound, &self.my_pos);
+        rotate_vec(&vec_of_attack, -120.0, None)
     }
 
     fn get_enemy_cos_to_me(&self, enemy: &Unit) -> f64 {
