@@ -12,7 +12,7 @@ use ai_cup_22::model::UnitOrder;
 use ai_cup_22::model::Vec2;
 use ai_cup_22::*;
 
-const K_SPIRAL: f64 = 0.77;
+const K_SPIRAL: f64 = 0.95;
 const K_VEC: f64 = 777.0;
 const TICKS_TO_RUN: u8 = 5;
 const MAX_OBS_RADIUS: f64 = 3.0;
@@ -38,7 +38,7 @@ enum State {
     GoToItem { id: i32, pos: Vec2 },
     GetItem(i32),
     UseShield,
-    Attack { pos: Vec2 },
+    Attack { pos: Vec2, dir: Vec2 },
     RunAway { dir: Vec2 },
 }
 
@@ -151,21 +151,33 @@ impl MyStrategy {
                 self.set_deafult_state();
                 (
                     self.default_velocity(),
-                    self.my_dir.clone(),
+                    self.default_rotate_direction(30.0),
                     Some(ActionOrder::UseShieldPotion {}),
                 )
             }
 
-            State::Attack { ref pos } => {
+            State::Attack { ref pos, ref dir } => {
                 let vec_to_target = sub_vec(pos, &self.my_pos);
+                let cos_view = cos_vec(&vec_to_target, dir);
+                let velocity = match cos_view {
+                    _ if cos_view <= -0.7 => self.spiral_rotate_direction(pos, 60.0, 0.2),
+                    _ if cos_view >= 0.5 => vec_to_target.clone(),
+                    _ => {
+                        let v1 = rotate_vec(&vec_to_target, 90.0, None);
+                        let v2 = rotate_vec(&vec_to_target, -90.0, None);
+                        let p = match cos_vec(&v1, dir) > cos_vec(&v2, dir) {
+                            true => 1.0,
+                            false => 0.0,
+                        };
+                        self.spiral_rotate_direction(pos, 60.0, p)
+                    }
+                };
+
                 let is_visible = self.check_enemy_visibility(pos);
                 let is_acessible = self.check_enemy_accesibility(pos);
                 let shoot = is_visible && is_acessible;
-                (
-                    self.spiral_rotate_direction(pos, 30.0),
-                    vec_to_target,
-                    Some(ActionOrder::Aim { shoot }),
-                )
+
+                (velocity, vec_to_target, Some(ActionOrder::Aim { shoot }))
             }
 
             State::RunAway { ref dir } => (dir.clone(), dir.clone(), None),
@@ -209,14 +221,14 @@ impl MyStrategy {
         rotate_vec(&self.my_dir, angle, None)
     }
 
-    fn spiral_rotate_direction(&self, pos: &Vec2, angle: f64) -> Vec2 {
+    fn spiral_rotate_direction(&self, pos: &Vec2, angle: f64, p: f64) -> Vec2 {
         let vec_enemy_to_me = Vec2 {
             x: self.my_pos.x - pos.x,
             y: self.my_pos.y - pos.y,
         };
 
         let mut rng = rand::thread_rng();
-        let sign = match rng.gen_bool(1.0 / 5.0) {
+        let sign = match rng.gen_bool(p) {
             true => 1.0,
             false => -1.0,
         };
@@ -339,6 +351,7 @@ impl MyStrategy {
         {
             self.state = State::Attack {
                 pos: enemy.position.clone(),
+                dir: enemy.direction.clone(),
             };
 
             self.set_operation_bit(op);
@@ -481,7 +494,7 @@ impl MyStrategy {
 
         for en in enemies {
             let cos_to_me = self.get_enemy_cos_to_me(en);
-            let k_power = (en.health + en.shield) / (self.my_health + self.my_shield);
+            let en_power = (en.health + en.shield) / (self.my_health + self.my_shield);
 
             if let Some(idx) = en.weapon {
                 let dist_to_me = dist_euclid(&self.my_pos, &en.position);
@@ -489,7 +502,7 @@ impl MyStrategy {
                 let can_shoot = weapon_dist >= dist_to_me;
 
                 if can_shoot
-                    && (idx > self.my_weapon && k_power > 1.0 || k_power > 1.5)
+                    && (idx > self.my_weapon || en_power > 1.5)
                     && en.ammo[idx as usize] > 0
                     && cos_to_me > 0.9
                     && en.aim >= 0.5
@@ -551,9 +564,9 @@ impl MyStrategy {
             })
             .next();
 
-        if let Some(obs_pos) = near_obstacle {
-            let v1 = rotate_vec(&obs_pos, 90.0, None);
-            let v2 = rotate_vec(&obs_pos, -90.0, None);
+        if let Some(vec_to_obs) = near_obstacle {
+            let v1 = rotate_vec(&vec_to_obs, 120.0, None);
+            let v2 = rotate_vec(&vec_to_obs, -120.0, None);
             match cos_vec(&v1, &target_velocity) > cos_vec(&v2, &target_velocity) {
                 true => v1,
                 false => v2,
