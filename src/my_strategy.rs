@@ -65,6 +65,7 @@ pub struct MyStrategy {
     my_shield_potions: i32,
     my_weapon: i32,
     my_weapon_num: i32,
+    my_ammo: Vec<i32>,
     zone_center: Vec2,
     zone_radius_2: f64,
 }
@@ -84,6 +85,7 @@ impl MyStrategy {
             my_shield_potions: 0,
             my_weapon: 0,
             my_weapon_num: 0,
+            my_ammo: Vec::new(),
             zone_center: Vec2::zero(),
             zone_radius_2: 0.0,
         }
@@ -94,7 +96,7 @@ impl MyStrategy {
         game: &model::Game,
         _debug_interface: Option<&mut DebugInterface>,
     ) -> model::Order {
-        self.operations.clear();
+        self.set_deafult_state();
 
         let (my_units, enemies): (Vec<_>, Vec<_>) = game
             .units
@@ -107,6 +109,7 @@ impl MyStrategy {
         self.my_health = my_unit.health;
         self.my_shield = my_unit.shield;
         self.my_shield_potions = my_unit.shield_potions;
+        self.my_ammo = my_unit.ammo.clone();
 
         self.zone_center = game.zone.current_center.clone();
         self.zone_radius_2 = (game.zone.current_radius - self.constants.unit_radius).powi(2);
@@ -131,10 +134,10 @@ impl MyStrategy {
         self.check_redzone();
         self.check_danger(&enemies);
 
-        if !self.check_operation_bit(OperationType::RunAway) {
+        if !self.is_run_away() {
             self.check_shield();
             self.check_attack(&enemies);
-            self.walk_and_loot(game, my_unit);
+            self.walk_and_loot(game);
             self.go_and_take_loot();
         }
 
@@ -201,10 +204,8 @@ impl MyStrategy {
             target_velocity = self.correct_velocity_by_attack(sounds_of_attack);
         }
 
-        match self.ticks_to_run {
-            1 => self.set_deafult_state(),
-            _ if self.ticks_to_run > 1 => self.ticks_to_run -= 1,
-            _ => (),
+        if self.ticks_to_run > 0 {
+            self.ticks_to_run -= 1;
         }
 
         let mut unit_orders = HashMap::with_capacity(1);
@@ -220,16 +221,20 @@ impl MyStrategy {
     }
 
     fn set_deafult_state(&mut self) {
+        if self.ticks_to_run > 0 {
+            return;
+        }
+
         self.state = State::Walk;
         self.operations_bin = 0;
-        self.ticks_to_run = 0;
+        self.operations.clear();
     }
 
     fn set_operation_bit(&mut self, op: OperationType) {
         self.operations_bin |= op as u32;
     }
 
-    fn check_operation_bit(&mut self, op: OperationType) -> bool {
+    fn check_operation_bit(&self, op: OperationType) -> bool {
         self.operations_bin & (op as u32) != 0
     }
 
@@ -274,7 +279,7 @@ impl MyStrategy {
         self.state = State::UseShield;
     }
 
-    fn walk_and_loot(&mut self, game: &model::Game, my_unit: &Unit) {
+    fn walk_and_loot(&mut self, game: &model::Game) {
         if self.operations_bin != 0 {
             return;
         }
@@ -293,7 +298,7 @@ impl MyStrategy {
                 Item::Weapon { type_index } => {
                     let idx = type_index as usize;
                     if (type_index > self.my_weapon || self.my_weapon_num == 0)
-                        && my_unit.ammo[idx] > 0
+                        && self.my_ammo[idx] > 0
                     {
                         weapons.push((loot, type_index))
                     }
@@ -303,7 +308,7 @@ impl MyStrategy {
                     amount,
                 } => {
                     let idx = weapon_type_index as usize;
-                    if my_unit.ammo[idx] < self.constants.weapons[idx].max_inventory_ammo {
+                    if self.my_ammo[idx] < self.constants.weapons[idx].max_inventory_ammo {
                         let find_first = (self.my_weapon == weapon_type_index
                             && weapon_type_index >= 1)
                             || weapon_type_index != self.my_weapon
@@ -358,10 +363,10 @@ impl MyStrategy {
             return;
         }
 
-        let walk_now = self.is_free_walk();
+        let full_equipment = self.is_full_equipment();
         if let Some((enemy, _)) = enemies
             .iter()
-            .filter(|e| walk_now || self.check_enemy_accesibility(&e.position))
+            .filter(|e| full_equipment || self.check_enemy_accesibility(&e.position))
             .map(|e| (e, dist_manh(&self.my_pos, &e.position)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
         {
@@ -504,7 +509,7 @@ impl MyStrategy {
     }
 
     fn check_danger(&mut self, enemies: &Vec<&Unit>) {
-        if enemies.is_empty() || self.check_operation_bit(OperationType::RunAway) {
+        if enemies.is_empty() || self.is_run_away() {
             return;
         }
 
@@ -565,15 +570,27 @@ impl MyStrategy {
             .iter()
             .filter_map(|ob| {
                 let vec_to_obs = sub_vec(&ob.position, &self.my_pos);
+                let dist_to_obs = dist_euclid(&ob.position, &self.my_pos);
+                let radius_sum = self.constants.unit_radius + ob.radius;
+
                 if ob.position.x >= min_x
                     && ob.position.x <= max_x
                     && ob.position.y >= min_y
                     && ob.position.y <= max_y
-                    && dist_euclid(&ob.position, &self.my_pos)
-                        < (self.constants.unit_radius + ob.radius + 2.0)
                     && cos_vec(&vec_to_obs, &target_velocity) > 0.0
                 {
-                    Some(vec_to_obs)
+                    let mut delta_dist = 2.0;
+                    if let State::GoToItem { ref pos, .. } = self.state {
+                        let dist_obs_to_item = dist_euclid(&ob.position, pos);
+                        if dist_obs_to_item <= ob.radius + delta_dist {
+                            // we need go closer
+                            delta_dist = 0.0;
+                        }
+                    }
+                    match dist_to_obs <= radius_sum + delta_dist {
+                        true => Some(vec_to_obs),
+                        false => None,
+                    }
                 } else {
                     None
                 }
@@ -608,8 +625,18 @@ impl MyStrategy {
         dist_euclid_square(pos, &self.zone_center) < self.zone_radius_2
     }
 
-    fn is_free_walk(&self) -> bool {
-        self.operations_bin == 0
+    fn is_full_equipment(&self) -> bool {
+        self.my_shield == self.constants.max_shield
+            && self.my_shield_potions == self.constants.max_shield_potions_in_inventory
+            && self
+                .my_ammo
+                .iter()
+                .zip(self.constants.weapons.iter())
+                .all(|(&my_num, weapon)| my_num == weapon.max_inventory_ammo)
+    }
+
+    fn is_run_away(&self) -> bool {
+        self.check_operation_bit(OperationType::RunAway)
     }
 
     pub fn debug_update(&mut self, _displayed_tick: i32, _debug_interface: &mut DebugInterface) {}
