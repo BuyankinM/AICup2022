@@ -16,6 +16,7 @@ const K_SPIRAL: f64 = 0.95;
 const K_VEC: f64 = 777.0;
 const TICKS_TO_RUN: u8 = 5;
 const MAX_OBS_RADIUS: f64 = 3.0;
+const NUM_UNITS: usize = 2;
 
 pub trait Vec2Ops {
     fn zero() -> Self;
@@ -56,8 +57,9 @@ pub struct MyStrategy {
     state: State,
     operations: HashMap<OperationType, State>,
     operations_bin: u32,
-    ticks_to_run: u8,
+    ticks_to_run: HashMap<i32, u8>,
     constants: model::Constants,
+    my_id: i32,
     my_dir: Vec2,
     my_pos: Vec2,
     my_health: f64,
@@ -76,8 +78,9 @@ impl MyStrategy {
             state: State::Walk,
             operations: HashMap::new(),
             operations_bin: 0,
-            ticks_to_run: 0,
+            ticks_to_run: HashMap::with_capacity(NUM_UNITS),
             constants,
+            my_id: 0,
             my_dir: Vec2::zero(),
             my_pos: Vec2::zero(),
             my_health: 0.0,
@@ -96,132 +99,137 @@ impl MyStrategy {
         game: &model::Game,
         _debug_interface: Option<&mut DebugInterface>,
     ) -> model::Order {
-        self.set_deafult_state();
+        let mut unit_orders = HashMap::with_capacity(NUM_UNITS);
 
         let (my_units, enemies): (Vec<_>, Vec<_>) = game
             .units
             .iter()
             .partition(|unit| unit.player_id == game.my_id);
 
-        let my_unit = my_units[0];
-        self.my_pos = my_unit.position.clone();
-        self.my_dir = my_unit.direction.clone();
-        self.my_health = my_unit.health;
-        self.my_shield = my_unit.shield;
-        self.my_shield_potions = my_unit.shield_potions;
-        self.my_ammo = my_unit.ammo.clone();
-
         self.zone_center = game.zone.current_center.clone();
         self.zone_radius_2 = (game.zone.current_radius - self.constants.unit_radius).powi(2);
 
-        (self.my_weapon, self.my_weapon_num) = match my_unit.weapon {
-            Some(id) => (id, my_unit.ammo[id as usize]),
-            None => (-1, 0),
-        };
+        for my_unit in &my_units {
+            self.set_deafult_state();
 
-        let sounds_of_attack = game
-            .sounds
-            .iter()
-            .filter_map(|s| {
-                if dist_euclid_square(&s.position, &self.my_pos) <= self.constants.unit_radius {
-                    Some((s.type_index, &s.position))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+            self.my_id = my_unit.id;
+            self.my_pos = my_unit.position.clone();
+            self.my_dir = my_unit.direction.clone();
+            self.my_health = my_unit.health;
+            self.my_shield = my_unit.shield;
+            self.my_shield_potions = my_unit.shield_potions;
+            self.my_ammo = my_unit.ammo.clone();
 
-        self.check_redzone();
-        self.check_danger(&enemies);
+            (self.my_weapon, self.my_weapon_num) = match my_unit.weapon {
+                Some(id) => (id, my_unit.ammo[id as usize]),
+                None => (-1, 0),
+            };
 
-        if !self.is_run_away() {
-            self.check_shield();
-            self.check_attack(&enemies);
-            self.walk_and_loot(game);
-            self.go_and_take_loot();
-        }
+            let sounds_of_attack = game
+                .sounds
+                .iter()
+                .filter_map(|s| {
+                    if dist_euclid_square(&s.position, &self.my_pos) <= self.constants.unit_radius {
+                        Some((s.type_index, &s.position))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
 
-        let (mut target_velocity, target_direction, action) = match self.state {
-            State::Walk => (
-                self.default_velocity(),
-                self.default_rotate_direction(30.0),
-                None,
-            ),
+            self.check_redzone();
+            self.check_danger(&enemies);
 
-            State::GoToItem { ref pos, .. } => {
-                let vec_to_target = sub_vec(pos, &self.my_pos);
-                (vec_to_target.clone(), vec_to_target, None)
+            if !self.is_run_away() {
+                self.check_shield();
+                self.check_attack(&enemies);
+                self.walk_and_loot(game);
+                self.go_and_take_loot();
             }
 
-            State::GetItem(loot) => {
-                self.set_deafult_state();
-                (
-                    self.default_velocity(),
-                    self.my_dir.clone(),
-                    Some(ActionOrder::Pickup { loot }),
-                )
-            }
-
-            State::UseShield => {
-                self.set_deafult_state();
-                (
+            let (mut target_velocity, target_direction, action) = match self.state {
+                State::Walk => (
                     self.default_velocity(),
                     self.default_rotate_direction(30.0),
-                    Some(ActionOrder::UseShieldPotion {}),
-                )
+                    None,
+                ),
+
+                State::GoToItem { ref pos, .. } => {
+                    let vec_to_target = sub_vec(pos, &self.my_pos);
+                    (vec_to_target.clone(), vec_to_target, None)
+                }
+
+                State::GetItem(loot) => {
+                    self.set_deafult_state();
+                    (
+                        self.default_velocity(),
+                        self.my_dir.clone(),
+                        Some(ActionOrder::Pickup { loot }),
+                    )
+                }
+
+                State::UseShield => {
+                    self.set_deafult_state();
+                    (
+                        self.default_velocity(),
+                        self.default_rotate_direction(30.0),
+                        Some(ActionOrder::UseShieldPotion {}),
+                    )
+                }
+
+                State::Attack { ref pos, ref dir } => {
+                    let vec_to_target = sub_vec(pos, &self.my_pos);
+                    let cos_view = cos_vec(&vec_to_target, dir);
+                    let velocity = match cos_view {
+                        _ if cos_view <= -0.7 => self.spiral_rotate_direction(pos, 60.0, 0.2),
+                        _ if cos_view >= 0.5 => vec_to_target.clone(),
+                        _ => {
+                            let v1 = rotate_vec(&vec_to_target, 90.0, None);
+                            let v2 = rotate_vec(&vec_to_target, -90.0, None);
+                            let p = match cos_vec(&v1, dir) > cos_vec(&v2, dir) {
+                                true => 1.0,
+                                false => 0.0,
+                            };
+                            self.spiral_rotate_direction(pos, 60.0, p)
+                        }
+                    };
+
+                    let is_visible = self.check_enemy_visibility(pos);
+                    let is_acessible = self.check_enemy_accesibility(pos);
+                    let shoot = is_visible && is_acessible;
+
+                    (velocity, vec_to_target, Some(ActionOrder::Aim { shoot }))
+                }
+
+                State::RunAway { ref dir } => (dir.clone(), dir.clone(), None),
+            };
+
+            target_velocity = self.correct_velocity_near_obstacle(target_velocity);
+
+            if !sounds_of_attack.is_empty() {
+                target_velocity = self.correct_velocity_by_attack(sounds_of_attack);
             }
 
-            State::Attack { ref pos, ref dir } => {
-                let vec_to_target = sub_vec(pos, &self.my_pos);
-                let cos_view = cos_vec(&vec_to_target, dir);
-                let velocity = match cos_view {
-                    _ if cos_view <= -0.7 => self.spiral_rotate_direction(pos, 60.0, 0.2),
-                    _ if cos_view >= 0.5 => vec_to_target.clone(),
-                    _ => {
-                        let v1 = rotate_vec(&vec_to_target, 90.0, None);
-                        let v2 = rotate_vec(&vec_to_target, -90.0, None);
-                        let p = match cos_vec(&v1, dir) > cos_vec(&v2, dir) {
-                            true => 1.0,
-                            false => 0.0,
-                        };
-                        self.spiral_rotate_direction(pos, 60.0, p)
-                    }
-                };
-
-                let is_visible = self.check_enemy_visibility(pos);
-                let is_acessible = self.check_enemy_accesibility(pos);
-                let shoot = is_visible && is_acessible;
-
-                (velocity, vec_to_target, Some(ActionOrder::Aim { shoot }))
+            let ticks_to_run = self.ticks_to_run.entry(self.my_id).or_default();
+            if *ticks_to_run > 0 {
+                *ticks_to_run -= 1;
             }
 
-            State::RunAway { ref dir } => (dir.clone(), dir.clone(), None),
-        };
-
-        target_velocity = self.correct_velocity_near_obstacle(target_velocity);
-
-        if !sounds_of_attack.is_empty() {
-            target_velocity = self.correct_velocity_by_attack(sounds_of_attack);
+            unit_orders.insert(
+                my_unit.id,
+                UnitOrder {
+                    target_velocity,
+                    target_direction,
+                    action,
+                },
+            );
         }
 
-        if self.ticks_to_run > 0 {
-            self.ticks_to_run -= 1;
-        }
-
-        let mut unit_orders = HashMap::with_capacity(1);
-        unit_orders.insert(
-            my_unit.id,
-            UnitOrder {
-                target_velocity,
-                target_direction,
-                action,
-            },
-        );
         Order { unit_orders }
     }
 
     fn set_deafult_state(&mut self) {
-        if self.ticks_to_run > 0 {
+        if *self.ticks_to_run.entry(self.my_id).or_default() > 0 {
             return;
         }
 
@@ -536,7 +544,7 @@ impl MyStrategy {
                     self.set_operation_bit(op);
                     self.operations.insert(op, self.state.clone());
 
-                    self.ticks_to_run = TICKS_TO_RUN;
+                    self.ticks_to_run.insert(self.my_id, TICKS_TO_RUN);
                     break;
                 }
             }
@@ -556,7 +564,7 @@ impl MyStrategy {
         self.set_operation_bit(op);
         self.operations.insert(op, self.state.clone());
 
-        self.ticks_to_run = TICKS_TO_RUN;
+        self.ticks_to_run.insert(self.my_id, TICKS_TO_RUN);
     }
 
     fn correct_velocity_near_obstacle(&self, target_velocity: Vec2) -> Vec2 {
