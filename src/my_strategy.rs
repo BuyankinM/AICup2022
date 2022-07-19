@@ -68,6 +68,7 @@ pub struct MyStrategy {
     my_weapon: i32,
     my_weapon_num: i32,
     my_ammo: Vec<i32>,
+    my_remaining_spawn_time: f64,
     zone_center: Vec2,
     zone_radius_2: f64,
 }
@@ -89,6 +90,7 @@ impl MyStrategy {
             my_weapon: 0,
             my_weapon_num: 0,
             my_ammo: Vec::new(),
+            my_remaining_spawn_time: 0.0,
             zone_center: Vec2::zero(),
             zone_radius_2: 0.0,
         }
@@ -119,6 +121,7 @@ impl MyStrategy {
             self.my_shield = my_unit.shield;
             self.my_shield_potions = my_unit.shield_potions;
             self.my_ammo = my_unit.ammo.clone();
+            self.my_remaining_spawn_time = my_unit.remaining_spawn_time.unwrap_or(0.0);
 
             (self.my_weapon, self.my_weapon_num) = match my_unit.weapon {
                 Some(id) => (id, my_unit.ammo[id as usize]),
@@ -138,6 +141,7 @@ impl MyStrategy {
                 .collect::<Vec<_>>();
 
             self.check_redzone();
+            self.check_spawn();
             self.check_danger(&enemies);
 
             if !self.is_run_away() {
@@ -374,7 +378,10 @@ impl MyStrategy {
         let full_equipment = self.is_full_equipment();
         if let Some((enemy, _)) = enemies
             .iter()
-            .filter(|e| full_equipment || self.check_enemy_accesibility(&e.position))
+            .filter(|e| {
+                (full_equipment || self.check_enemy_accesibility(&e.position))
+                    && e.remaining_spawn_time.unwrap_or(0.0) == 0.0
+            })
             .map(|e| (e, dist_manh(&self.my_pos, &e.position)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
         {
@@ -565,6 +572,20 @@ impl MyStrategy {
         self.operations.insert(op, self.state.clone());
 
         self.ticks_to_run.insert(self.my_id, TICKS_TO_RUN);
+    }
+
+    fn check_spawn(&mut self) {
+        if self.my_remaining_spawn_time == 0.0 {
+            return;
+        }
+
+        self.state = State::RunAway {
+            dir: self.default_velocity(),
+        };
+
+        let op = OperationType::RunAway;
+        self.set_operation_bit(op);
+        self.operations.insert(op, self.state.clone());
     }
 
     fn correct_velocity_near_obstacle(&self, target_velocity: Vec2) -> Vec2 {
