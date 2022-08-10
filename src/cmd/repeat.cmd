@@ -1,0 +1,1 @@
+.\aicup22.exe --repeat .\game.log

@@ -1,0 +1,30 @@
+{
+  "seed": null,
+  "game": {
+    "Create": {
+	"Override": {
+	      "preset": "Round2",
+	      "bot_players_config": [
+	        {
+	          "Empty": null
+	        }
+	      ]
+	    }
+	}
+  },
+  "players": [
+    {
+      "Tcp": {
+        "host": null,
+        "port": 31001,
+        "accept_timeout": null,
+        "single_timeout": null,
+        "total_time_limit": null,
+        "token": null,
+        "run": {
+	      "run_command": [".\\ai-cup-22.exe"]
+	}
+      }
+    }
+  ]
+}

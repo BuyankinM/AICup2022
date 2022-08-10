@@ -1,0 +1,18 @@
+{
+  "seed": null,
+  "game": {
+    "Create": "Round2"
+  },
+  "players": [
+    {
+      "Tcp": {
+        "host": null,
+        "port": 31001,
+        "accept_timeout": null,
+        "single_timeout": null,
+        "total_time_limit": null,
+        "token": null
+      }
+    }
+  ]
+}

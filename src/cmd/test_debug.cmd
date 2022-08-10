@@ -1,0 +1,1 @@
+.\aicup22.exe --config .\config_debug.json

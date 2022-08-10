@@ -36,11 +36,20 @@ impl Vec2Ops for Vec2 {
 #[derive(Clone)]
 enum State {
     Walk,
-    GoToItem { id: i32, pos: Vec2 },
+    GoToItem {
+        id: i32,
+        pos: Vec2,
+    },
     GetItem(i32),
     UseShield,
-    Attack { pos: Vec2, dir: Vec2 },
-    RunAway { dir: Vec2 },
+    Attack {
+        pos: Vec2,
+        dir: Vec2,
+        spawn_time: f64,
+    },
+    RunAway {
+        dir: Vec2,
+    },
 }
 
 #[derive(Hash, Eq, PartialEq, Copy, Clone)]
@@ -140,6 +149,8 @@ impl MyStrategy {
                 })
                 .collect::<Vec<_>>();
 
+            let safe_way = self.prepare_safe_way(&enemies, &sounds_of_attack);
+
             self.check_redzone();
             self.check_spawn();
             self.check_danger(&enemies);
@@ -152,11 +163,7 @@ impl MyStrategy {
             }
 
             let (mut target_velocity, target_direction, action) = match self.state {
-                State::Walk => (
-                    self.default_velocity(),
-                    self.default_rotate_direction(30.0),
-                    None,
-                ),
+                State::Walk => (safe_way.clone(), self.default_rotate_direction(30.0), None),
 
                 State::GoToItem { ref pos, .. } => {
                     let vec_to_target = sub_vec(pos, &self.my_pos);
@@ -166,7 +173,7 @@ impl MyStrategy {
                 State::GetItem(loot) => {
                     self.set_deafult_state();
                     (
-                        self.default_velocity(),
+                        safe_way.clone(),
                         self.my_dir.clone(),
                         Some(ActionOrder::Pickup { loot }),
                     )
@@ -175,13 +182,17 @@ impl MyStrategy {
                 State::UseShield => {
                     self.set_deafult_state();
                     (
-                        self.default_velocity(),
+                        safe_way.clone(),
                         self.default_rotate_direction(30.0),
                         Some(ActionOrder::UseShieldPotion {}),
                     )
                 }
 
-                State::Attack { ref pos, ref dir } => {
+                State::Attack {
+                    ref pos,
+                    ref dir,
+                    spawn_time,
+                } => {
                     let vec_to_target = sub_vec(pos, &self.my_pos);
                     let cos_view = cos_vec(&vec_to_target, dir);
                     let velocity = match cos_view {
@@ -199,7 +210,7 @@ impl MyStrategy {
                     };
 
                     let is_visible = self.check_enemy_visibility(pos);
-                    let is_acessible = self.check_enemy_accesibility(pos);
+                    let is_acessible = self.check_enemy_accesibility(pos) && spawn_time <= 0.5;
                     let shoot = is_visible && is_acessible;
 
                     (velocity, vec_to_target, Some(ActionOrder::Aim { shoot }))
@@ -209,10 +220,6 @@ impl MyStrategy {
             };
 
             target_velocity = self.correct_velocity_near_obstacle(target_velocity);
-
-            if !sounds_of_attack.is_empty() {
-                target_velocity = self.correct_velocity_by_attack(sounds_of_attack);
-            }
 
             let ticks_to_run = self.ticks_to_run.entry(self.my_id).or_default();
             if *ticks_to_run > 0 {
@@ -375,19 +382,17 @@ impl MyStrategy {
             return;
         }
 
-        let full_equipment = self.is_full_equipment();
+        let _full_equipment = self.is_full_equipment();
         if let Some((enemy, _)) = enemies
             .iter()
-            .filter(|e| {
-                (full_equipment || self.check_enemy_accesibility(&e.position))
-                    && e.remaining_spawn_time.unwrap_or(0.0) == 0.0
-            })
+            .filter(|e| (self.check_enemy_accesibility(&e.position)))
             .map(|e| (e, dist_manh(&self.my_pos, &e.position)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
         {
             self.state = State::Attack {
                 pos: enemy.position.clone(),
                 dir: enemy.direction.clone(),
+                spawn_time: enemy.remaining_spawn_time.unwrap_or(0.0),
             };
 
             self.set_operation_bit(op);
@@ -642,6 +647,27 @@ impl MyStrategy {
         let (_, pos_sound) = sounds.into_iter().max_by_key(|(id, _)| *id).unwrap();
         let vec_of_attack = sub_vec(pos_sound, &self.my_pos);
         rotate_vec(&vec_of_attack, -120.0, None)
+    }
+
+    fn prepare_safe_way(&self, enemies: &Vec<&Unit>, sounds_of_attack: &Vec<(i32, &Vec2)>) -> Vec2 {
+        let mut safe_way = Vec2::zero();
+
+        enemies.iter().for_each(|enemy| {
+            let dir_to_me = sub_vec(&self.my_pos, &enemy.position);
+            safe_way.x += dir_to_me.x;
+            safe_way.y += dir_to_me.y;
+        });
+
+        sounds_of_attack.iter().for_each(|(_, pos)| {
+            let dir_to_me = sub_vec(&self.my_pos, pos);
+            safe_way.x += dir_to_me.x;
+            safe_way.y += dir_to_me.y;
+        });
+
+        match enemies.is_empty() && sounds_of_attack.is_empty() {
+            true => self.default_velocity(),
+            false => rotate_vec(&safe_way, 45.0, None),
+        }
     }
 
     fn get_enemy_cos_to_me(&self, enemy: &Unit) -> f64 {
